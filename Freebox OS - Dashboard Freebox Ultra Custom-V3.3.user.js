@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Freebox OS - Dashboard Freebox Ultra Custom
-// @namespace    https://github.com/Steven17200/freebox-os-ultra-dashboard
+// @namespace    https://github.com/GrokBot-Cursor/freebox-os-ultra-dashboard
 // @version      5.0
 // @description  Dashboard Ultra Custom — VM/VPN 1 ligne + Switch pastilles
 // @author       Steven17200
