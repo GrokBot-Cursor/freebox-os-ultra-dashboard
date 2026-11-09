@@ -28,6 +28,85 @@
 
     const X_SVG = '<svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"></path></svg>';
 
+    // --- Gestion de la détection de mise à jour distante (dev.freebox.fr) ---
+    let cachedLatestRelease = null;
+    let lastCheckTime = 0;
+
+    function fetchLatestServerRelease() {
+        return new Promise((resolve) => {
+            const now = Date.now();
+            if (cachedLatestRelease && (now - lastCheckTime < 15 * 60 * 1000)) {
+                return resolve(cachedLatestRelease);
+            }
+
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: 'https://dev.freebox.fr/blog/feed/',
+                timeout: 10000,
+                onload: function (res) {
+                    try {
+                        const parser = new DOMParser();
+                        const xml = parser.parseFromString(res.responseText, 'application/xml');
+                        const items = xml.querySelectorAll('item');
+
+                        for (let item of items) {
+                            const title = item.querySelector('title')?.textContent || '';
+                            const link = item.querySelector('link')?.textContent || '';
+                            const pubDateStr = item.querySelector('pubDate')?.textContent || '';
+
+                            // Recherche d'un billet concernant le Server (Ultra, Delta, Pop, etc.)
+                            if (/Freebox Server/i.test(title)) {
+                                const versionMatch = title.match(/(\d+\.\d+(\.\d+)?)/);
+                                if (versionMatch) {
+                                    let dateFormatted = '';
+                                    if (pubDateStr) {
+                                        const d = new Date(pubDateStr);
+                                        if (!isNaN(d.getTime())) {
+                                            dateFormatted = d.toLocaleDateString('fr-FR', {
+                                                day: '2-digit',
+                                                month: '2-digit',
+                                                year: 'numeric'
+                                            });
+                                        }
+                                    }
+
+                                    cachedLatestRelease = {
+                                        version: versionMatch[1],
+                                        date: dateFormatted,
+                                        url: link || 'https://dev.freebox.fr/blog/?s=Freebox+ultra'
+                                    };
+                                    lastCheckTime = now;
+                                    return resolve(cachedLatestRelease);
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.error('[Ultra Dashboard] Erreur parsing RSS blog Freebox:', e);
+                    }
+                    resolve(cachedLatestRelease);
+                },
+                onerror: function () {
+                    resolve(cachedLatestRelease);
+                }
+            });
+        });
+    }
+
+    function compareSemver(vCurrent, vLatest) {
+        if (!vCurrent || !vLatest) return 0;
+        const cParts = String(vCurrent).split('.').map(Number);
+        const lParts = String(vLatest).split('.').map(Number);
+        const len = Math.max(cParts.length, lParts.length);
+
+        for (let i = 0; i < len; i++) {
+            const c = cParts[i] || 0;
+            const l = lParts[i] || 0;
+            if (l > c) return 1;  // MAJ disponible
+            if (l < c) return -1; // Version actuelle plus récente
+        }
+        return 0; // Versions identiques
+    }
+
     function tempColor(t) {
         const n = Number(t);
         if (!Number.isFinite(n)) return '#888';
@@ -236,6 +315,9 @@
         .led { height: 9px; width: 9px; border-radius: 50%; display: inline-block; margin-right: 8px; }
         .led-active { background: #00d4ff; box-shadow: 0 0 8px #00d4ff; }
         .led-off { background: #444; }
+        .led-alert { background: #f44336; box-shadow: 0 0 8px #f44336; animation: blinkLed 1.2s infinite; }
+        .led-ok { background: #4CAF50; box-shadow: 0 0 8px #4CAF50; }
+        @keyframes blinkLed { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
         .vm-card { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 10px; margin-top: 10px; border-left: 4px solid #444; }
         .vm-card.active { border-left-color: #00ff00; background: rgba(0,255,0,0.05); }
         .vpn-card { background: rgba(0,212,255,0.06); border-radius: 10px; padding: 8px 10px; margin-top: 8px; border-left: 3px solid #00d4ff; }
@@ -253,6 +335,8 @@
         .sw-name { font-size: 12px; font-weight: 700; color: #fff; }
         .sw-meta { font-size: 10px; color: #aaa; margin-top: 2px; word-break: break-all; }
         .footer-info { margin-top: 15px; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.2); font-size: 11px; line-height: 1.6; color: #ccc; }
+        .maj-link { color: #ff5252; text-decoration: none; font-weight: bold; }
+        .maj-link:hover { text-decoration: underline; }
     `);
 
     function addSocialTiles() {
@@ -285,7 +369,7 @@
     async function refresh() {
         build();
         try {
-            const [conn, config, sys, diskData, partData, wifi, dhcpCfg, vmData, vpn8, vpn4, lanHosts, swStatus] = await Promise.all([
+            const [conn, config, sys, diskData, partData, wifi, dhcpCfg, vmData, vpn8, vpn4, lanHosts, swStatus, latestRelease] = await Promise.all([
                 api('/api/v4/connection/'),
                 api('/api/v4/connection/config/'),
                 api('/api/v4/system/'),
@@ -297,7 +381,8 @@
                 api('/api/v8/vpn/connection/'),
                 api('/api/v4/vpn/connection/'),
                 api('/api/v4/lan/browser/pub/'),
-                api('/api/v4/switch/status/')
+                api('/api/v4/switch/status/'),
+                fetchLatestServerRelease()
             ]);
             const macIp = buildMacIpMap((lanHosts.success && Array.isArray(lanHosts.result)) ? lanHosts.result : []);
             const swPorts = (swStatus.success && Array.isArray(swStatus.result)) ? swStatus.result : [];
@@ -314,7 +399,33 @@
             const adblockOn = !!(config.success && config.result && config.result.adblock);
             const wifiOn = !!(wifi.success && wifi.result && wifi.result.enabled);
             const dnsPrimary = (dhcpCfg.success && dhcpCfg.result && dhcpCfg.result.dns && dhcpCfg.result.dns.length) ? dhcpCfg.result.dns[0] : 'Auto';
-            const updateIcon = s.need_reboot ? '<span style="color:#f44336">Redemarrer</span>' : '<span style="color:#4CAF50">A jour</span>';
+
+            // Analyse de l'état de mise à jour
+            const currentVer = s.firmware_version || '';
+            const isNeedReboot = !!s.need_reboot;
+            let hasNewUpdate = false;
+
+            if (latestRelease && latestRelease.version && currentVer) {
+                if (compareSemver(currentVer, latestRelease.version) > 0) {
+                    hasNewUpdate = true;
+                }
+            }
+
+            let updateStatusHtml = '';
+            let newVersionLine = '';
+
+            if (isNeedReboot) {
+                updateStatusHtml = '<span class="led led-alert"></span><span style="color:#f44336;font-weight:bold;">Redémarrer</span>';
+            } else if (hasNewUpdate) {
+                updateStatusHtml = '<span class="led led-alert"></span><span style="color:#f44336;font-weight:bold;">MÀJ DISPONIBLE</span>';
+                newVersionLine = '<div style="font-size:11px; margin-bottom:4px; color:#ff5252;">Dispo : <a href="' + latestRelease.url + '" target="_blank" class="maj-link">' + latestRelease.version + '</a>' + (latestRelease.date ? ' (' + latestRelease.date + ')' : '') + '</div>';
+            } else {
+                updateStatusHtml = '<span class="led led-ok"></span><span style="color:#4CAF50;">À jour</span>';
+                if (latestRelease && latestRelease.date) {
+                    newVersionLine = '<div style="font-size:10px; color:#888; margin-bottom:4px;">Date MAJ : ' + latestRelease.date + '</div>';
+                }
+            }
+
             const down = fmtRateBytes(c.rate_down);
             const up = fmtRateBytes(c.rate_up);
             const capDown = fmtCapBits(c.bandwidth_down);
@@ -333,8 +444,9 @@
                     '<h1 class="title-h">ULTRA <span style="color:#f00; font-weight:900;">NET</span></h1>' +
                     '<img id="box-avatar" src="' + BOX_IMG + '" alt="" onerror="this.classList.add(\'broken\')">' +
                     '<div class="stat-label">Systeme OS</div>' +
-                    '<div style="font-size:11px; margin-bottom:4px;">Version : <b>' + (s.firmware_version || '?') + '</b></div>' +
-                    '<div style="font-size:11px; margin-bottom:4px;">Etat : <b>' + updateIcon + '</b></div>' +
+                    '<div style="font-size:11px; margin-bottom:4px;">Version : <b>' + (currentVer || '?') + '</b></div>' +
+                    '<div style="font-size:11px; margin-bottom:4px; display:flex; align-items:center;">Etat : &nbsp;<b>' + updateStatusHtml + '</b></div>' +
+                    newVersionLine +
                     '<div style="font-size:11px; color:#aaa; margin-bottom:8px;">Uptime : ' + (s.uptime || '?') + '</div>' +
                     '<div class="stat-label">Reseau Wi-Fi</div>' +
                     '<div class="stat-value"><span class="led ' + (wifiOn ? 'led-active' : 'led-off') + '"></span>' + (wifiOn ? 'ACTIF' : 'OFF') + '</div>' +
